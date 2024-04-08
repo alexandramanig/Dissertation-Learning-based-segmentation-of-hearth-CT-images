@@ -10,9 +10,10 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-# Variabile globale pentru a stoca imaginea încărcată și imaginea segmentată
-loaded_img = None
+# Variabile globale pentru a stoca imaginile încărcate și imaginea segmentată
+loaded_imgs = []  # Lista de imagini încărcate
 segmented_img = None
+test_img = None  # Imaginea de testare
 
 # Variabile globale pentru model și generatorul de date
 model = None
@@ -47,31 +48,36 @@ def build_model(input_shape):
     model.compile(optimizer=Adam(learning_rate=0.0001), loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
-# Funcția pentru încărcarea imaginii DICOM
-def load_image():
-    global loaded_img
+# Funcția pentru încărcarea imaginilor DICOM pentru antrenare
+def load_training_images():
+    global loaded_imgs
+    file_paths = filedialog.askopenfilenames()
+    loaded_imgs.clear()  # Golim lista de imagini încărcate anterior
+    for file_path in file_paths:
+        dicom_data = pydicom.dcmread(file_path)
+        loaded_img = dicom_data.pixel_array
+        print("Dimensiunea imaginii încărcate:", loaded_img.shape)  # Afișăm dimensiunea imaginii
+        loaded_imgs.append(loaded_img)
+
+
+# Funcția pentru încărcarea imaginii de testare
+def load_test_image():
+    global test_img
     file_path = filedialog.askopenfilename()
     dicom_data = pydicom.dcmread(file_path)
-    loaded_img = dicom_data.pixel_array
+    test_img = dicom_data.pixel_array
 
-    # Redimensionarea imaginii la dimensiunea așteptată de model
-    resized_img = resize(loaded_img, (256, 256))
+    # Redimensionarea și afișarea imaginii de testare
+    if test_img is not None:
+        display_test_image(test_img)
 
-    # Normalizarea imaginii la intervalul [0, 1]
-    normalized_img = resized_img / np.max(resized_img)
-
-    # Convertirea imaginii la formatul acceptat de PIL (uint8)
-    pil_img = Image.fromarray((normalized_img * 255).astype(np.uint8))
-
-    display_image(pil_img)
-
-# Funcția pentru segmentarea imaginii
-def segment_image():
-    global loaded_img, model, segmented_img
-    if loaded_img is not None:
+# Funcția pentru segmentarea imaginii de testare
+def segment_test_image():
+    global test_img, model, segmented_img
+    if test_img is not None:
         if model is not None:
-            # Redimensionarea imaginii la dimensiunea așteptată de model
-            resized_img = resize(loaded_img, (256, 256))
+            # Redimensionarea imaginii de testare la dimensiunea așteptată de model
+            resized_img = resize(test_img, (256, 256))
             normalized_img = resized_img / np.max(resized_img)
             x_input = normalized_img.reshape(1, 256, 256, 1)
 
@@ -79,7 +85,7 @@ def segment_image():
             segmented_img = model.predict(x_input)
 
             # Redimensionarea imaginii segmentate la dimensiunea imaginii originale
-            resized_segmented_img = resize(segmented_img[0, :, :, 0], loaded_img.shape)
+            resized_segmented_img = resize(segmented_img[0, :, :, 0], test_img.shape)
             
             # Afisarea imaginii segmentate
             pil_img = Image.fromarray((resized_segmented_img * 255).astype(np.uint8))
@@ -87,13 +93,13 @@ def segment_image():
         else:
             print("Antrenați mai întâi modelul.")
     else:
-        print("Încărcați mai întâi o imagine DICOM.")
+        print("Încărcați mai întâi o imagine de testare.")
 
 # Funcție pentru antrenarea modelului
 def train_model():
     global model, data_generator
     epochs = int(epochs_entry.get())  # Obține numărul de epoci din câmpul de intrare
-    if loaded_img is not None:
+    if loaded_imgs:
         input_shape = (256, 256, 1)
 
         # Construirea modelului
@@ -108,32 +114,52 @@ def train_model():
                                             vertical_flip=True)
         
         # Redimensionăm imaginile la dimensiunile așteptate de model
-        x_train_resized = resize(loaded_img, (256, 256, 1))
-        y_train_resized = resize(loaded_img, (512, 512, 1))  # Redimensionăm etichetele la aceeași dimensiune cu imaginile
+        x_train_resized = []
+        y_train_resized = []
+        for loaded_img in loaded_imgs:
+            x_train_resized.append(resize(loaded_img, (256, 256, 1)))
+            y_train_resized.append(resize(loaded_img, (512, 512, 1)))  # Redimensionăm etichetele la aceeași dimensiune cu imaginile
 
-        # Extindem dimensiunea pe axa 0 pentru a se potrivi cu cerințele generatorului de date
-        x_train_resized = np.expand_dims(x_train_resized, axis=0)
-        y_train_resized = np.expand_dims(y_train_resized, axis=0)
+        # Convertim listele în numpy arrays
+        x_train_resized = np.array(x_train_resized)
+        y_train_resized = np.array(y_train_resized)
 
         # Antrenarea modelului
         model.fit(data_generator.flow(x_train_resized, y_train_resized, batch_size=1), epochs=epochs)
 
         print("Antrenarea modelului a fost finalizată.")
     else:
-        print("Încărcați mai întâi o imagine DICOM.")
-
+        print("Încărcați mai întâi imagini DICOM pentru antrenare.")
 
 # Funcție pentru antrenarea modelului într-un fir de execuție separat
 def train_model_thread():
     threading.Thread(target=train_model).start()
 
-# Funcție pentru afișarea imaginii pe Canvas
+# Funcție pentru afișarea imaginii de antrenare pe Canvas
 def display_image(img):
     global canvas_orig, img_tk_orig
     if img_tk_orig is not None:
         canvas_orig.delete(img_tk_orig)
-    img_tk_orig = ImageTk.PhotoImage(img)
+    
+    # Convertim matricea numpy în imagine PIL
+    img_pil = Image.fromarray(img)
+
+    # Creăm PhotoImage din imaginea PIL
+    img_tk_orig = ImageTk.PhotoImage(img_pil)
     canvas_orig.create_image(0, 0, anchor=tk.NW, image=img_tk_orig)
+
+# Funcție pentru afișarea imaginii de testare pe Canvas
+def display_test_image(img):
+    global canvas_test, img_tk_test
+    if img_tk_test is not None:
+        canvas_test.delete(img_tk_test)
+    
+    # Convertim matricea numpy în imagine PIL
+    img_pil = Image.fromarray(img)
+
+    # Creăm PhotoImage din imaginea PIL
+    img_tk_test = ImageTk.PhotoImage(img_pil)
+    canvas_test.create_image(0, 0, anchor=tk.NW, image=img_tk_test)
 
 # Funcție pentru afișarea imaginii segmentate pe Canvas
 def display_segmented_image(img):
@@ -147,36 +173,42 @@ def display_segmented_image(img):
 root = tk.Tk()
 root.title("Segmentare cardiacă folosind imagini DICOM")
 
-# Butonul pentru încărcarea imaginii DICOM
-load_button = tk.Button(root, text="Încarcă imagine DICOM", command=load_image)
-load_button.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
+# Butonul pentru încărcarea imaginilor DICOM pentru antrenare
+load_training_button = tk.Button(root, text="Încarcă imagini antrenare", command=load_training_images)
+load_training_button.grid(row=0, column=0, padx=(5, 2), pady=1, sticky=tk.W)  
 
 # Butonul pentru antrenarea modelului
 train_button = tk.Button(root, text="Antrenare model", command=train_model_thread)
-train_button.grid(row=0, column=1, padx=5, pady=5)
+train_button.grid(row=0, column=1, padx=2, pady=1) 
 
-# Butonul pentru segmentarea imaginii
-segmentation_button = tk.Button(root, text="Segmentare imagine", command=segment_image)
-segmentation_button.grid(row=0, column=2, padx=5, pady=5, sticky=tk.E)
+# Butonul pentru încărcarea imaginii de testare
+load_test_button = tk.Button(root, text="Încarcă imagine de testare", command=load_test_image)
+load_test_button.grid(row=0, column=2, padx=2, pady=1)  
+
+# Butonul pentru segmentarea imaginii de testare
+segmentation_button = tk.Button(root, text="Segmentare imagine de testare", command=segment_test_image)
+segmentation_button.grid(row=0, column=3, padx=(2, 5), pady=1, sticky=tk.E)  
 
 # Eticheta și câmpul de intrare pentru numărul de epoci
 epochs_label = tk.Label(root, text="Număr de epoci:")
 epochs_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
 
 epochs_entry = tk.Entry(root)
-epochs_entry.grid(row=1, column=1, columnspan=2, padx=5, pady=5)
+epochs_entry.grid(row=1, column=1, padx=5, pady=5)
 epochs_entry.insert(0, "5")  # Setează valoarea implicită a numărului de epoci
 
-# Canvas pentru afișarea imaginii originale
-canvas_orig = tk.Canvas(root, width=300, height=300)
-canvas_orig.grid(row=2, column=0, columnspan=2, padx=10, pady=10)
+# Canvas pentru afișarea imaginii de testare
+canvas_test = tk.Canvas(root, width=400, height=400)
+canvas_test.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
 
 # Canvas pentru afișarea imaginii segmentate
-canvas_segmented = tk.Canvas(root, width=300, height=300)
-canvas_segmented.grid(row=2, column=2, padx=10, pady=10)
+canvas_segmented = tk.Canvas(root, width=400, height=400)
+canvas_segmented.grid(row=2, column=2, columnspan=2, padx=10, pady=10, sticky=tk.E)
 
-# Inițializăm o referință la imaginea încărcată și la imaginea segmentată
+# Inițializăm o referință la imaginea încărcată, la imaginea de testare și la imaginea segmentată
 img_tk_orig = None
+img_tk_test = None
 img_tk_segmented = None
 
 # Rularea buclei principale a aplicației
